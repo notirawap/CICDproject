@@ -1,6 +1,6 @@
 FROM maven:3.9.9-eclipse-temurin-21-jammy AS build_image
 RUN git clone https://github.com/notirawap/CICDproject.git
-RUN cd CICDproject && git checkout docker && mvn install
+RUN cd CICDproject && git checkout main && mvn install
 
 FROM tomcat:10-jdk21
 
