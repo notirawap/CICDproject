@@ -1,121 +1,138 @@
+def COLOR_MAP = [
+    'SUCCESS': 'good', 
+    'FAILURE': 'danger',
+]
+
 pipeline {
-    
-	agent any
-/*	
-	tools {
-        maven "maven3"
+
+    agent any
+
+    tools {
+        maven "MAVEN3.9.9"
+        jdk "JDK17"
     }
-*/	
+
     environment {
-        NEXUS_VERSION = "nexus3"
-        NEXUS_PROTOCOL = "http"
-        NEXUS_URL = "172.31.40.209:8081"
-        NEXUS_REPOSITORY = "vprofile-release"
-	NEXUS_REPO_ID    = "vprofile-release"
-        NEXUS_CREDENTIAL_ID = "nexuslogin"
-        ARTVERSION = "${env.BUILD_ID}"
+        // registryCredential = '<registry_type:region:aws_credentials_ID>'
+        registryCredential = 'ecr:us-east-1:awscreds'
+        // imageName = '<URI>'
+        imageName = "266735847828.dkr.ecr.us-east-1.amazonaws.com/cicdproject"
+        // registry = 'https://<URI without image_name>'
+        registry = "https://266735847828.dkr.ecr.us-east-1.amazonaws.com"
+
+        // Create ECS cluster containing service. Service is a task which will run your container fetching image from ECR
+        // cluster = '<cluster_name>'
+        cluster = 'cicdprojectcluster'
+        // service = '<service_name>'
+        service = 'cicdprojectsvc'
     }
-	
-    stages{
-        
-        stage('BUILD'){
-            steps {
+
+    stages {
+
+        stage('Fetch code') {
+            steps{
+                git branch: 'main', 
+                url: 'https://github.com/notirawap/CICDproject.git'
+            }
+        }
+ 
+        stage('Build') {
+            steps{
                 sh 'mvn clean install -DskipTests'
             }
             post {
-                success {
-                    echo 'Now Archiving...'
-                    archiveArtifacts artifacts: '**/target/*.war'
+                success{
+                    echo "************************ Archiving Artifact ************************"
+                    archiveArtifacts artifacts: '**/*.war' 
                 }
             }
         }
 
-	stage('UNIT TEST'){
-            steps {
+        stage('Unit Test') {
+            steps{
                 sh 'mvn test'
             }
         }
 
-	stage('INTEGRATION TEST'){
-            steps {
-                sh 'mvn verify -DskipUnitTests'
-            }
-        }
-		
-        stage ('CODE ANALYSIS WITH CHECKSTYLE'){
-            steps {
+        stage('Checkstyle Analysis') {
+            steps{
                 sh 'mvn checkstyle:checkstyle'
             }
-            post {
-                success {
-                    echo 'Generated Analysis Result'
+        }
+
+        stage('Sonar Code analysis') {
+            environment {
+                scannerHome = tool 'SONAR'
+            }
+            steps {
+                withSonarQubeEnv('sonarserver') {
+                    sh '''${scannerHome}/bin/sonar-scanner \
+                        -Dsonar.projectKey=CICDproject \
+                        -Dsonar.projectName=CICDproject \
+                        -Dsonar.projectVersion=1.0 \
+                        -Dsonar.sources=src/ \
+                        -Dsonar.java.binaries=target/test-classes/com/visualpathit/account/controllerTest/ \
+                        -Dsonar.junit.reportsPath=target/surefire-reports/ \
+                        -Dsonar.jacoco.reportsPath=target/jacoco.exec \
+                        -Dsonar.java.checkstyle.reportPaths=target/checkstyle-result.xml'''
+                }
+            }
+        }
+        
+        stage("Quality Gate") {
+            steps {
+                timeout(time: 1, unit: 'HOURS') {
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
 
-        stage('CODE ANALYSIS with SONARQUBE') {
-          
-		  environment {
-             scannerHome = tool 'sonarscanner4'
-          }
-
-          steps {
-            withSonarQubeEnv('sonar-pro') {
-               sh '''${scannerHome}/bin/sonar-scanner -Dsonar.projectKey=vprofile \
-                   -Dsonar.projectName=vprofile-repo \
-                   -Dsonar.projectVersion=1.0 \
-                   -Dsonar.sources=src/ \
-                   -Dsonar.java.binaries=target/test-classes/com/visualpathit/account/controllerTest/ \
-                   -Dsonar.junit.reportsPath=target/surefire-reports/ \
-                   -Dsonar.jacoco.reportsPath=target/jacoco.exec \
-                   -Dsonar.java.checkstyle.reportPaths=target/checkstyle-result.xml'''
-            }
-
-            timeout(time: 10, unit: 'MINUTES') {
-               waitForQualityGate abortPipeline: true
-            }
-          }
-        }
-
-        stage("Publish to Nexus Repository Manager") {
+        stage('Build App Image') {
             steps {
                 script {
-                    pom = readMavenPom file: "pom.xml";
-                    filesByGlob = findFiles(glob: "target/*.${pom.packaging}");
-                    echo "${filesByGlob[0].name} ${filesByGlob[0].path} ${filesByGlob[0].directory} ${filesByGlob[0].length} ${filesByGlob[0].lastModified}"
-                    artifactPath = filesByGlob[0].path;
-                    artifactExists = fileExists artifactPath;
-                    if(artifactExists) {
-                        echo "*** File: ${artifactPath}, group: ${pom.groupId}, packaging: ${pom.packaging}, version ${pom.version} ARTVERSION";
-                        nexusArtifactUploader(
-                            nexusVersion: NEXUS_VERSION,
-                            protocol: NEXUS_PROTOCOL,
-                            nexusUrl: NEXUS_URL,
-                            groupId: pom.groupId,
-                            version: ARTVERSION,
-                            repository: NEXUS_REPOSITORY,
-                            credentialsId: NEXUS_CREDENTIAL_ID,
-                            artifacts: [
-                                [artifactId: pom.artifactId,
-                                classifier: '',
-                                file: artifactPath,
-                                type: pom.packaging],
-                                [artifactId: pom.artifactId,
-                                classifier: '',
-                                file: "pom.xml",
-                                type: "pom"]
-                            ]
-                        );
-                    } 
-		    else {
-                        error "*** File: ${artifactPath}, could not be found";
+                    // Run docker plugin with build function: docker.build("URI"+":<image_tag>", "<Dockerfile path from the Github source code>")
+                    dockerImage = docker.build(imageName + ":$BUILD_NUMBER", ".")
+                }
+            }
+    
+        }
+
+        stage('Upload App Image') {
+            steps{
+                script {
+                    // Run docker plugin with withRegistry function: withRegistry("https://<URI without image_name>'", "<registry_name:region:credentials_ID>") for Docker plugin to login to registry
+                    docker.withRegistry(registry, registryCredential) {
+                        // Push Docker image with the tags
+                        dockerImage.push("$BUILD_NUMBER") // tag1
+                        dockerImage.push('latest') // tag2
                     }
                 }
             }
         }
 
+        stage('Remove Container Images'){
+            steps{
+                sh 'docker rmi -f $(docker images -a -q)'
+            }
+        }
 
+        stage('Deploy to ECS'){
+            steps{
+                // withAWS(credentials: '<aws_credentials_ID>', region: '<region>')
+                withAWS(credentials:'awscreds', region: 'us-east-1'){
+                    // AWS CLI to remove the old container with the old image tag, fetch new image with the latest tags, and run it on the ECS cluster.
+                    sh 'aws ecs update-service --cluster ${cluster} --service ${service} --force-new-deployment'
+                }
+            }
+        }
     }
 
-
+    post {
+		always {
+				echo 'Slack Notifications'
+				slackSend channel: '#devopscicd',
+				color: COLOR_MAP[currentBuild.currentResult],
+				message: "*${currentBuild.currentResult}:* Job ${env.JOB_NAME} build ${env.BUILD_NUMBER} \n More info at: ${env.BUILD_URL}"
+		}
+    }
 }
